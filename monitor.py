@@ -1,54 +1,73 @@
-import os, requests
-from playwright.sync_api import sync_playwright
+import requests
+import os
+import sys
 
-def send_tg(msg):
-    token = os.environ.get("TG_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
-    if token and chat_id:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        try:
-            requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}, timeout=15)
-        except:
-            print("TG发送失败")
+# 从 GitHub Secrets 中读取 Telegram 配置
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID")
 
-def run():
-    print("--- 启动 PIP World 比赛监控 ---")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={'width': 1920, 'height': 1080})
-        page = context.new_page()
+# 🚨 【重要】你需要将这里替换为你抓包得到的真实 API 地址
+API_URL = "https://api.pip.world/tournaments/list" # 这是一个占位符
+
+def send_tg_msg(text):
+    """发送 TG 报警消息"""
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TG_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("✅ Telegram 消息发送成功")
+        else:
+            print(f"❌ Telegram 发送失败: {response.text}")
+    except Exception as e:
+        print(f"❌ 网络请求异常: {e}")
+
+def check_tournaments():
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json"
+    }
+    
+    try:
+        print("开始请求 API...")
+        response = requests.get(API_URL, headers=headers, timeout=10)
         
-        try:
-            # 直接进入你提供的比赛列表页
-            target_url = "https://mm.pip.world/tournaments?lang=zh&tab=all"
-            print(f"正在访问: {target_url}")
-            page.goto(target_url, wait_until="networkidle", timeout=60000)
-            
-            # 给页面 20 秒加载时间，Web3 页面通常加载较慢
-            print("等待比赛列表加载...")
-            page.wait_for_timeout(20000) 
+        if response.status_code != 200:
+            print(f"请求失败，状态码: {response.status_code}")
+            return
 
-            # --- 监控策略：统计比赛卡片 ---
-            # 观察页面，每个比赛通常都有“奖金”或“参与”按钮
-            # 我们统计页面上出现的“详情”或“Details”按钮数量，或者特定的卡片特征
-            # 这里建议统计包含“Prize”或“奖金”字样的区块
-            cards = page.locator("button:has-text('详情'), button:has-text('Details'), div.tournament-card")
-            count = cards.count()
+        data = response.json()
+        
+        # 🚨 【重要】这里的 data.get("data", []) 需要根据真实的 JSON 结构修改
+        tournaments = data.get("data", []) 
+        
+        # 为了精准，我们只统计名字里带有“创世杯”的赛事，防止官方上了其他类型的活动干扰判断
+        genesis_cups = [t for t in tournaments if "创世杯" in t.get("name", "")]
+        current_count = len(genesis_cups)
+        
+        # 核心逻辑：如果数量不是 6 个，就报警！
+        if current_count != 6:
+            msg = (
+                f"🚨 <b>PIP 赛事数量异常报警</b> 🚨\n\n"
+                f"当前“创世杯”数量变动为: <b>{current_count}</b> 个！(原为 6 个)\n"
+                f"可能有新一期赛事发布，请立即去网页检查状态。\n"
+                f"<a href='https://mm.pip.world/tournaments?lang=zh&tab=all'>👉 点击直达网页</a>"
+            )
+            send_tg_msg(msg)
+            print(f"发现异常！当前数量: {current_count}，已发送报警。")
+        else:
+            print("赛事数量正常 (6个)，继续潜伏。")
             
-            print(f"当前页面检测到比赛数量: {count}")
-
-            # 假设目前常驻的比赛是 2 个，如果变成 3 个就报警
-            # 你可以根据实际看到的比赛数量修改下面这个数字
-            if count > 2: 
-                print(f"🚨 发现新比赛！当前总数: {count}")
-                send_tg(f"🏆 **PIP World 新比赛预警！**\n\n检测到当前共有 **{count}** 个比赛项目。\n\n[点击立即参加]({target_url})")
-            else:
-                print(f"✅ 状态正常：当前有 {count} 个比赛，暂无新增。")
-                
-        except Exception as e:
-            print(f"脚本运行出错: {e}")
-        finally:
-            browser.close()
+    except Exception as e:
+        print(f"脚本运行出错: {e}")
 
 if __name__ == "__main__":
-    run()
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        print("❌ 缺少 TG_BOT_TOKEN 或 TG_CHAT_ID 环境变量！")
+        sys.exit(1)
+    
+    check_tournaments()
