@@ -22,53 +22,59 @@ def send_tg_msg(text):
 
 def check_tournaments():
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
-        print("❌ 错误: 缺少 TG_BOT_TOKEN 或 TG_CHAT_ID 环境变量")
+        print("❌ 错误: 缺少 TG_BOT_TOKEN 或 TG_CHAT_ID")
         sys.exit(1)
 
     print("启动浏览器抓取网页...")
     with sync_playwright() as p:
-        # 启动无头浏览器
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
         
         try:
-            # 访问网页，并等待网络闲置（确保 JS 加载完成）
             page.goto(URL, wait_until="networkidle", timeout=30000)
-            
-            # 显式等待目标元素出现，最多等 15 秒
-            print("等待赛事列表渲染...")
             page.wait_for_selector('.tournament-board__title-name', timeout=15000)
             
-            # 获取所有赛事标题元素
+            # --- 1. 抓取标题逻辑 ---
             elements = page.query_selector_all('.tournament-board__title-name')
             titles = [el.inner_text() for el in elements]
-            print(f"网页中抓取到以下标题: {titles}")
+            target_cups = [t for t in titles if "创世杯" in t or "Genesis Cup" in t]
+            count = len(target_cups)
+            has_xi = any("XI" in t.split() for t in titles)
             
-            # 过滤出“创世杯”
-            genesis_cups = [t for t in titles if "创世杯" in t]
-            count = len(genesis_cups)
-            has_vii = any("VII" in t for t in genesis_cups)
+            # --- 2. 新增核心指标：检测【加入竞赛】按钮 ---
+            # 使用 Playwright 的文本选择器，精确匹配页面上有没有这四个字
+            join_btn_count = page.locator("text='加入竞赛'").count()
+            has_join_btn = join_btn_count > 0
+
+            print(f"-> 抓取到标题: {titles}")
+            print(f"-> 目标赛事总数: {count} (预期: 10)")
+            print(f"-> 发现第11期(XI): {has_xi}")
+            print(f"-> 发现【加入竞赛】按钮: {has_join_btn} (数量: {join_btn_count})")
             
-            print(f"-> 当前创世杯数量: {count}")
-            print(f"-> 是否发现 VII: {has_vii}")
-            
-            # 核心策略：数量不是 6 个，或者发现了 VII，立刻报警
-            if count != 6 or has_vii:
+            # --- 3. 触发报警逻辑 ---
+            # 只要数量不对，或者出现了 XI，或者出现了加入按钮，立马报警！
+            if count != 10 or has_xi or has_join_btn:
                 msg = (
-                    f"🚨 <b>PIP 锦标赛监控报警！</b> 🚨\n\n"
-                    f"<b>当前创世杯数量:</b> {count} (预期: 6)\n"
-                    f"<b>是否发现第七期:</b> {'是 ⚠️' if has_vii else '否'}\n\n"
-                    f"请立即前往网页检查！\n"
-                    f"<a href='{URL}'>👉 点击直达网页</a>"
+                    f"🚨 <b>PIP 锦标赛紧急报警！</b> 🚨\n\n"
+                    f"<b>触发原因：</b>\n"
+                )
+                if has_join_btn:
+                    msg += f"👉 🟢 <b>页面出现了 {join_btn_count} 个【加入竞赛】按钮！快去抢！</b>\n"
+                if count != 10:
+                    msg += f"👉 📊 赛事总数变动: 当前 {count} 个 (原基准: 10)\n"
+                if has_xi:
+                    msg += f"👉 🆕 发现了新一期 Genesis Cup XI\n"
+
+                msg += (
+                    f"\n<a href='{URL}'>🔗 点击立即直达网页抢坑</a>"
                 )
                 send_tg_msg(msg)
             else:
-                print("✅ 状态正常（数量为 6 且未发现 VII），继续潜伏。")
+                print("✅ 状态正常（无加入按钮，数量 10，无 XI），继续潜伏。")
                 
         except Exception as e:
             print(f"❌ 抓取过程中发生异常: {e}")
-            # 如果网页结构大改，找不到元素也会走到这里，我们可以发个报错通知自己
-            send_tg_msg(f"⚠️ <b>PIP 监控脚本异常</b>\n无法定位网页元素或加载超时，可能是网页结构已更改，请检查 GitHub Actions 日志。")
+            send_tg_msg(f"⚠️ <b>PIP 监控脚本异常</b>\n抓取失败，可能是页面加载超时或结构大改，请查阅日志。")
             sys.exit(1)
         finally:
             browser.close()
